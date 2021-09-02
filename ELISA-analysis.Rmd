@@ -1,0 +1,107 @@
+---
+title: "ELISA logistic regression analysis"
+output:
+  html_document:
+    df_print: paged
+---
+
+Use this script to run logistic regression on absorbance values
+
+```{r}
+options(warn=-1)
+knitr::opts_chunk$set(message = FALSE, warning = FALSE,
+                      fig.width = 7, fig.height = 4)
+```
+```{r}
+# library(ELISAtools)
+library(drc)
+library(tidyverse)
+library(readxl)
+library(ggpubr)
+
+
+data_sheet <- "/Users/ncamarda/OneDrive - Tufts/phd/ws/scripts/absorbance/sflt elisa for nick.xlsx"
+output_dir <- "/Users/ncamarda/OneDrive - Tufts/phd/ws/scripts/absorbance/output"
+dir.create(output_dir, recursive = T, showWarnings = F)
+ # <- read_excel(data_sheet, sheet = 2)
+  
+standard_dat <- read_excel(data_sheet, sheet = 3)  %>%
+  mutate(across(.cols = `Abs at 450nm`:`final`, as.numeric)) %>%
+  mutate(log2concentration = log2(standard)) %>%
+  mutate(absorbance = `Adjusted absorbance`)
+results <- read_excel(data_sheet, shee = 2) %>%
+  mutate(new_sample_id = str_c("s_",as.character(sample_id), sep=""),
+         across(.cols = w450:`Adjusted absorbance`, as.numeric))
+
+
+# logistic regression model; estimate slope, ED50, and upper and lower bounds using non-linear method
+fit <- drm(formula = absorbance ~ log2concentration, 
+         data = standard_dat, 
+         fct=LL.4(names=c("Slope", "Lower", "Upper", "ED50")),
+         logDose = 2 # log 2 doses
+        )
+
+# print the fit summary
+print(summary(fit))
+```
+
+```{r}
+# this is teh adjusted absorbances of each of the samples; we want to predict their concentration based off the standard curve
+response <- results$`Adjusted absorbance`
+
+# in the order of the samples
+DOSEx_temp <- ED(fit,response,type="absolute",display=F) %>% as_tibble()
+
+DOSEx <- DOSEx_temp %>% as.data.frame() %>%
+  mutate(up = Estimate + `Std. Error`,
+         down = Estimate - `Std. Error`) %>%
+  mutate(across(.cols = everything(), log2))
+
+
+
+combined_res <- bind_cols(results, DOSEx_temp, 
+                          DOSEx %>% rename_with(.fn = ~ str_c(.x, "_log2"), .cols = everything())) %>%
+  # dplyr::select(sample_id, new_sample_id, `Adjusted absorbance`, Estimate, `Std. Error`) %>%
+  dplyr::rename(`Concentration Estimate` = Estimate,
+                `Concentration Estimate (log2)` = Estimate_log2)
+```
+
+# RESULTS
+```{r plot}
+print(DOSEx)
+plot_fn <- file.path(output_dir, "results_plot.pdf")
+
+# print the plot in the markdown document
+plot(fit, 
+      xlim = c(min(DOSEx[,1], na.rm = T), max(DOSEx[,1], na.rm = T)),
+       ylim = c(min(response, na.rm = T), max(response, na.rm = T)), main = "Plot of absorbance x concentration\nFitted sample values overlayed") +
+points(y=response,x=DOSEx[,1],col="blue",pch=19,cex=0.75) +
+# With error bars
+arrows(DOSEx[,1], response, DOSEx$up, response, length=0.05, angle=90, lwd=1,col="blue") +
+arrows(DOSEx[,1], response, DOSEx$down, response, length=0.05, angle=90, lwd=1,col="blue")
+
+
+# save the plot
+pdf(file = plot_fn, width = 6, height = 6)
+plot(fit, 
+      xlim = c(min(DOSEx[,1], na.rm = T), max(DOSEx[,1], na.rm = T)),
+       ylim = c(min(response, na.rm = T), max(response, na.rm = T)), main = "Plot of absorbance x concentration\nFitted sample values overlayed") +
+points(y=response,x=DOSEx[,1],col="blue",pch=19,cex=0.75) +
+# With error bars
+arrows(DOSEx[,1], response, DOSEx$up, response, length=0.05, angle=90, lwd=1,col="blue") +
+arrows(DOSEx[,1], response, DOSEx$down, response, length=0.05, angle=90, lwd=1,col="blue")
+dev.off()
+
+```
+(`r knitr::fig_chunk('plot', 'png')`)
+
+
+# Results written to this directory:
+```{r}
+message("writing to output directory:")
+message(output_dir)
+write_tsv(combined_res, file = file.path(output_dir, "results.tsv"))
+options(warn=0)
+```
+
+
