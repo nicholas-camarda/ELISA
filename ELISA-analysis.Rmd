@@ -12,6 +12,7 @@ options(warn=-1)
 knitr::opts_chunk$set(message = FALSE, warning = FALSE,
                       fig.width = 7, fig.height = 4)
 ```
+
 ```{r}
 # library(ELISAtools)
 library(drc)
@@ -19,27 +20,32 @@ library(tidyverse)
 library(readxl)
 library(ggpubr)
 
-
-data_sheet <- "/Users/ncamarda/OneDrive - Tufts/phd/ws/scripts/absorbance/sflt elisa for nick.xlsx"
-output_dir <- "/Users/ncamarda/OneDrive - Tufts/phd/ws/scripts/absorbance/output"
+# could just make this a project...
+data_sheet <- file.path("data", "2022-04-13 SFLT.xlsx") # 2022-03-11 sflt elisa.xlsx
+output_dir <- file.path("output", 
+                        str_extract(string = basename(data_sheet), 
+                                    pattern = "[0-9]+-[0-9]+-[0-9]+"))
 dir.create(output_dir, recursive = T, showWarnings = F)
- # <- read_excel(data_sheet, sheet = 2)
-  
-standard_dat <- read_excel(data_sheet, sheet = 3)  %>%
-  mutate(across(.cols = `Abs at 450nm`:`final`, as.numeric)) %>%
-  mutate(log2concentration = log2(standard)) %>%
-  mutate(absorbance = `Adjusted absorbance`)
-results <- read_excel(data_sheet, shee = 2) %>%
-  mutate(new_sample_id = str_c("s_",as.character(sample_id), sep=""),
-         across(.cols = w450:`Adjusted absorbance`, as.numeric))
 
+
+standard_dat <- read_excel(data_sheet, sheet = 1)  %>%
+  # assuming that Concentration of STandard is the 1st column
+  mutate(log2concentration = log2(.[[1]]),
+         Absorbance = .[[2]])
+results <- read_excel(data_sheet, sheet = 2) %>%
+  mutate(Samples = .[[1]],
+         Absorbance = .[[2]])
 
 # logistic regression model; estimate slope, ED50, and upper and lower bounds using non-linear method
-fit <- drm(formula = absorbance ~ log2concentration, 
-         data = standard_dat, 
-         fct=LL.4(names=c("Slope", "Lower", "Upper", "ED50")),
-         logDose = 2 # log 2 doses
-        )
+# logic behind this model: where we model the ED50 in log space,  four-parameter log-logistic model may be preferred for dose-response analysis involving very small datasets (<15–20) where a normally distributed parameter estimate may more reasonably be assumed on a logarithm-transformed dose scale than the original dose scale.
+
+# drc paper: https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0146021#sec001
+
+fit <- drm(formula = Absorbance ~ log2concentration, 
+           data = standard_dat, 
+           fct=LL.4(names=c("Slope", "Lower", "Upper", "ED50")),
+           logDose = 2 # log 2 doses
+)
 
 # print the fit summary
 print(summary(fit))
@@ -47,7 +53,7 @@ print(summary(fit))
 
 ```{r}
 # this is teh adjusted absorbances of each of the samples; we want to predict their concentration based off the standard curve
-response <- results$`Adjusted absorbance`
+response <- results$Absorbance
 
 # in the order of the samples
 DOSEx_temp <- ED(fit,response,type="absolute",display=F) %>% as_tibble()
@@ -61,37 +67,41 @@ DOSEx <- DOSEx_temp %>% as.data.frame() %>%
 
 combined_res <- bind_cols(results, DOSEx_temp, 
                           DOSEx %>% rename_with(.fn = ~ str_c(.x, "_log2"), .cols = everything())) %>%
-  # dplyr::select(sample_id, new_sample_id, `Adjusted absorbance`, Estimate, `Std. Error`) %>%
-  dplyr::rename(`Concentration Estimate` = Estimate,
-                `Concentration Estimate (log2)` = Estimate_log2)
+  dplyr::rename(`fit_to_curve_concentration_estimate` = Estimate,
+                `log2_fit_to_curve_concentration_estimate` = Estimate_log2)
+
+print(combined_res %>% select(1:3))
 ```
 
 # RESULTS
+## Note: Estimated concentrations are the same unit as the standard's concentrations
 ```{r plot}
 print(DOSEx)
 plot_fn <- file.path(output_dir, "results_plot.pdf")
 
 # print the plot in the markdown document
 plot(fit, 
-      xlim = c(min(DOSEx[,1], na.rm = T), max(DOSEx[,1], na.rm = T)),
-       ylim = c(min(response, na.rm = T), max(response, na.rm = T)), main = "Plot of absorbance x concentration\nFitted sample values overlayed") +
-points(y=response,x=DOSEx[,1],col="blue",pch=19,cex=0.75) +
-# With error bars
-arrows(DOSEx[,1], response, DOSEx$up, response, length=0.05, angle=90, lwd=1,col="blue") +
-arrows(DOSEx[,1], response, DOSEx$down, response, length=0.05, angle=90, lwd=1,col="blue")
+     xlim = c(min(DOSEx[,1], na.rm = T), max(DOSEx[,1], na.rm = T)),
+     ylim = c(min(response, na.rm = T), max(response, na.rm = T)), main = "Plot of absorbance x concentration\nFitted sample values overlayed") +
+  points(y=response,x=DOSEx[,1],col="blue",pch=19,cex=0.75) +
+  # With error bars
+  arrows(DOSEx[,1], response, DOSEx$up, response, length=0.05, angle=90, lwd=1,col="blue") +
+  arrows(DOSEx[,1], response, DOSEx$down, response, length=0.05, angle=90, lwd=1,col="blue")
 
 
 # save the plot
-pdf(file = plot_fn, width = 6, height = 6)
-plot(fit, 
-      xlim = c(min(DOSEx[,1], na.rm = T), max(DOSEx[,1], na.rm = T)),
+save_plot <- function() {
+  pdf(file = plot_fn, width = 6, height = 6)
+  plot(fit, 
+       xlim = c(min(DOSEx[,1], na.rm = T), max(DOSEx[,1], na.rm = T)),
        ylim = c(min(response, na.rm = T), max(response, na.rm = T)), main = "Plot of absorbance x concentration\nFitted sample values overlayed") +
-points(y=response,x=DOSEx[,1],col="blue",pch=19,cex=0.75) +
-# With error bars
-arrows(DOSEx[,1], response, DOSEx$up, response, length=0.05, angle=90, lwd=1,col="blue") +
-arrows(DOSEx[,1], response, DOSEx$down, response, length=0.05, angle=90, lwd=1,col="blue")
-dev.off()
-
+    points(y=response,x=DOSEx[,1],col="blue",pch=19,cex=0.75) +
+    # With error bars
+    arrows(DOSEx[,1], response, DOSEx$up, response, length=0.05, angle=90, lwd=1,col="blue") +
+    arrows(DOSEx[,1], response, DOSEx$down, response, length=0.05, angle=90, lwd=1,col="blue")
+  dev.off()
+}
+save_plot()
 ```
 (`r knitr::fig_chunk('plot', 'png')`)
 
@@ -100,8 +110,26 @@ dev.off()
 ```{r}
 message("writing to output directory:")
 message(output_dir)
-write_tsv(combined_res, file = file.path(output_dir, "results.tsv"))
+write_tsv(combined_res %>% select(Samples, Absorbance, fit_to_curve_concentration_estimate), 
+          file = file.path(output_dir, "results.tsv"))
 options(warn=0)
 ```
 
+
+# More about *drc* package and 4-param logit Dose Response model
+
+The full specification of a statistical dose-response (regression) model involves specifying how the mean is described by a parametric function of dose as well as specifying assumptions about the distribution of the response.
+
+We parameterize this model using a unified structure with a coefficient $b$, denoting the **steepness** of the dose-response curve, $c$ and $d$, the lower and upper asymptotes or limits of the response, and $\tilde{e}$ is the $log_2$ of the effective dose (ED50). Note: These are the $\beta$'s
+
+$$ f(x, (b, c, d, \tilde{e})) = c + \frac{d - c}{1 + exp(b(log(x) - \tilde{e}))} $$
+This 4-param log-logistic regression model is preferred with very small datasets (<15–20) because without the logarithm, $e$ or the ED50 may not be normally distributed at  the original dose scale.
+
+
+## More information about the statistical model being used
+Let $y$ denote an observed response value corresponding to a dose value $x$ greater than or equal to 0. The values of $y$ are often positive but may take arbitrary positive or negative values (for instance, could be log2 transformed, as in our case). Furthermore, we will assume that observation of $y$ is subject to sampling variation, necessiating the specification of a statistical model describing the random variation. Specifically, we will focus on characterizing the mean of $y$ (denoted $E(y)$ below) in terms of a model function $f$ that depends on the dose $x$:
+
+$$E(y) = f(x,\beta)$$
+
+So, for a given dose $x$, the corresponding observed response values will be distributed around $f(x, \beta)$. The function $f$ is completely known as it reflects the assumed relationship between $x$ and $y$, except for the values of the model parameters $\beta = (\beta1, …, \beta p)$, which will be estimated from the data to obtain the best fitting function (**these are the 4 parameters being estimated for our model above**, $b$, $c$, $d$, and $\tilde{e}$). The remaining distributional assumptions on $y$ will depend on the type of response (which is continous for us). 
 
